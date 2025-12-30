@@ -1,0 +1,564 @@
+# =============================================================================
+# 模組導入區 (Imports)
+# =============================================================================
+import ipywidgets as widgets      # 用於在 Jupyter Notebook 中建立互動式介面 (按鈕、版面)
+from IPython.display import display # 用於明確顯示 widget 元件
+import requests                   # 用於發送 HTTP 請求 (下載題庫)
+import random                     # 用於隨機選取單字
+import threading                  # 用於多執行緒處理 (避免下載或翻譯時卡住介面)
+from deep_translator import GoogleTranslator # 用於翻譯單字 (解決舊版 googletrans 錯誤)
+
+# =============================================================================
+# 1. 設計系統 (Design System)
+# -----------------------------------------------------------------------------
+# 設計模式：配置類別 (Configuration Class)
+# 目的：將所有「常數」、「顏色」、「文字」集中管理，方便日後統一修改，
+#       避免在程式邏輯中出現「魔術數字 (Magic Numbers)」或散落的色碼。
+# =============================================================================
+class DesignSystem:
+    """
+    [配置類別] 集中管理 UI 的視覺樣式、常數與設定。
+    """
+    # 介面尺寸 (鎖定 16:9 比例，確保視覺一致性)
+    WIDTH_MAIN = '800px'
+    HEIGHT_MAIN = '450px'
+
+    # 現代化配色盤 (參考 Material Design 風格)
+    COLOR_BG = '#FFFFFF'           # 背景色
+    COLOR_SIDEBAR = '#F3F4F6'      # 左側資訊欄底色 (淺灰)
+    COLOR_PRIMARY = '#2563EB'      # 主要按鈕色 (藍)
+    COLOR_SUCCESS = '#059669'      # 成功/正確提示色 (綠)
+    COLOR_ERROR = '#DC2626'        # 錯誤/失敗提示色 (紅)
+    COLOR_TEXT_MAIN = '#1F2937'    # 主要文字色 (深黑)
+    COLOR_TEXT_LIGHT = '#6B7280'   # 次要文字色 (淺灰)
+    COLOR_KEY_DEFAULT = '#E5E7EB'  # 虛擬鍵盤預設色
+
+    # 鍵盤佈局 (標準 QWERTY 排列，分為三列)
+    KEYBOARD_LAYOUT = [
+        "QWERTYUIOP",
+        "ASDFGHJKL",
+        "ZXCVBNM"
+    ]
+
+    # 外部題庫資源 (使用 GitHub 上的公開英文單字表)
+    # 透過 key 來區分難度，對應不同的 URL
+    URLS = {
+        'easy': 'https://raw.githubusercontent.com/first20hours/google-10000-english/master/google-10000-english-usa-no-swears-short.txt',
+        'medium': 'https://raw.githubusercontent.com/first20hours/google-10000-english/master/google-10000-english-usa-no-swears-medium.txt',
+        'hard': 'https://raw.githubusercontent.com/first20hours/google-10000-english/master/google-10000-english-usa-no-swears-long.txt'
+    }
+
+    # 多語言字典 (i18n - Internationalization)
+    # 透過 key 切換 'en' 或 'zh' 來改變介面文字
+    TRANSLATIONS = {
+        'en': {
+            'start_title': 'Loading...',
+            'start_desc': 'Fetching words...',
+            'win_title': 'YOU WON!',
+            'lose_title': 'GAME OVER',
+            'translating': 'Translating...',
+            'trans_fail': 'Offline',
+            'ans_label': 'ANSWER',
+            'btn_start': 'RESTART',
+            'lbl_cheat': 'Show Vowels',
+            'diff_easy': 'Easy',
+            'diff_medium': 'Medium',
+            'diff_hard': 'Hard',
+        },
+        'zh': {
+            'start_title': '載入中...',
+            'start_desc': '正在下載題庫...',
+            'win_title': '恭喜獲勝！',
+            'lose_title': '遊戲結束',
+            'translating': '翻譯中...',
+            'trans_fail': '無法翻譯',
+            'ans_label': '正確答案',
+            'btn_start': '重新開始',
+            'lbl_cheat': '顯示母音',
+            'diff_easy': '簡單',
+            'diff_medium': '中等',
+            'diff_hard': '困難',
+        }
+    }
+
+# =============================================================================
+# 2. 視覺資產 (Visual Assets)
+# -----------------------------------------------------------------------------
+# 負責生成非互動式的視覺元素，這裡使用 SVG (可縮放向量圖形) 來繪製劊子手。
+# =============================================================================
+def get_hangman_svg(lives: int) -> str:
+    """
+    根據剩餘生命值生成 SVG 向量圖字串。
+
+    Args:
+        lives (int): 剩餘生命值 (0 到 6)。
+
+    Returns:
+        str: 包含 HTML SVG 標籤的字串。
+    """
+    color_main = "#374151" # 筆畫顏色
+    color_dead = "#DC2626" # 死亡時的紅色標記
+
+    # 定義身體各部位的 SVG 路徑
+    # 使用 Python 的字典 (Dictionary) 映射：血量 -> 對應的身體部位 SVG 代碼
+    parts = {
+        5: f'<circle cx="100" cy="75" r="22" stroke="{color_main}" stroke-width="6" fill="none"/>', # 頭
+        4: f'<line x1="100" y1="97" x2="100" y2="170" stroke="{color_main}" stroke-width="6" stroke-linecap="round"/>', # 軀幹
+        3: f'<line x1="100" y1="115" x2="65" y2="145" stroke="{color_main}" stroke-width="6" stroke-linecap="round"/>', # 左手
+        2: f'<line x1="100" y1="115" x2="135" y2="145" stroke="{color_main}" stroke-width="6" stroke-linecap="round"/>', # 右手
+        1: f'<line x1="100" y1="170" x2="70" y2="225" stroke="{color_main}" stroke-width="6" stroke-linecap="round"/>', # 左腳
+        0: f'<line x1="100" y1="170" x2="130" y2="225" stroke="{color_dead}" stroke-width="6" stroke-linecap="round"/>' # 右腳
+    }
+
+    # SVG 容器：viewBox="0 0 200 260" 設定了作畫的座標系範圍
+    svg = '<svg width="100%" height="100%" viewBox="0 0 200 260" preserveAspectRatio="xMidYMid meet">'
+    # 繪製絞刑台 (靜態部分，永遠存在)
+    svg += '<path d="M30 250 L170 250 M60 250 L60 20 L100 20 L100 53" stroke="#4B5563" stroke-width="8" stroke-linecap="round" fill="none"/>'
+
+    # 演算法邏輯：
+    # 從 5 開始倒數，如果計數器大於當前剩餘血量，代表該部位已「死亡/被畫出來」。
+    # 例如：當 lives=4，迴圈會跑 i=5 (頭)，符合條件，畫出頭。
+    for i in range(5, lives - 1, -1):
+        if i in parts: svg += parts[i]
+
+    svg += '</svg>'
+    return svg
+
+# =============================================================================
+# 3. 遊戲核心控制器 (Game Controller)
+# -----------------------------------------------------------------------------
+# 這是主類別，負責將 UI、邏輯、網路請求結合在一起。
+# =============================================================================
+class UltimateHangman:
+    """
+    Hangman 遊戲主程式類別。
+
+    Attributes:
+        word_list (list): 當前載入的單字列表。
+        current_word (str): 本局的謎題單字。
+        lives (int): 剩餘生命值。
+        guessed (list): 玩家已猜過的字母。
+        state (str): 遊戲狀態 ('START', 'PLAYING', 'WON', 'LOST')。
+        _req_id (int): 請求識別碼，用於防止網路請求衝突 (Race Condition)。
+    """
+
+    def __init__(self):
+        # 1. 初始化設定與變數
+        self.config = DesignSystem()
+        self.word_list = []
+        self.current_word = ""
+        self.lives = 6
+        self.guessed = []
+        self.state = 'START'
+        self.lang = 'zh' # 預設語言：繁體中文
+
+        # [進階觀念] 請求識別碼 (Request ID)
+        # 用於標記每一次的「下載請求」。當網路回應回來時，我們會檢查 ID 是否吻合。
+        # 如果使用者快速切換難度 (Easy -> Hard)，舊的 Easy 請求可能會比 Hard 晚回來，
+        # 這個機制可以讓我們丟棄過期的回應。
+        self._req_id = 0
+
+        # 2. 建構 UI 介面
+        self._build_ui()
+
+    def _build_ui(self):
+        """
+        組裝 ipywidgets 介面元件。
+        使用 VBox (垂直容器) 與 HBox (水平容器) 進行排版。
+        """
+
+        # --- A. 頂部導航列 (Top Bar) ---
+        # 語言切換按鈕
+        self.dd_lang = widgets.ToggleButtons(
+            options=[('EN', 'en'), ('中', 'zh')],
+            value='zh',
+            button_style='', # 預設樣式
+            layout=widgets.Layout(width='100px'),
+            style={'button_width': '40px'}
+        )
+        # 綁定事件：當值改變時，執行 _on_lang_change
+        self.dd_lang.observe(self._on_lang_change, names='value')
+
+        # 難度選擇選單
+        self.dd_diff = widgets.Dropdown(
+            options=[('Easy', 'easy'), ('Medium', 'medium'), ('Hard', 'hard')],
+            value='medium',
+            layout=widgets.Layout(width='100px')
+        )
+
+        # 作弊模式勾選框 (顯示母音)
+        self.cb_mode = widgets.Checkbox(value=False, description='Show Vowels', indent=False, layout=widgets.Layout(width='auto'))
+        self.cb_mode.observe(self._on_mode_change, names='value')
+
+        # 將上述元件放入水平容器 (HBox)
+        top_bar = widgets.HBox(
+            [self.dd_lang, self.dd_diff, self.cb_mode],
+            layout=widgets.Layout(
+                width='100%', height='50px',
+                justify_content='space-between', align_items='center', # Flexbox 排版設定
+                padding='0 20px 0 20px', border='0 0 1px 0 solid #E5E7EB'
+            )
+        )
+
+        # --- B. 左側面板 (Visual Panel) ---
+        # 顯示劊子手 SVG
+        self.html_board = widgets.HTML(layout=widgets.Layout(width='180px', height='240px'))
+        # 顯示愛心生命值
+        self.html_lives = widgets.HTML(layout=widgets.Layout(margin='15px 0 0 0', height='30px'))
+
+        left_panel = widgets.VBox(
+            [self.html_board, self.html_lives],
+            layout=widgets.Layout(
+                width='35%', height='100%',
+                align_items='center', justify_content='center',
+                background_color=self.config.COLOR_SIDEBAR
+            )
+        )
+
+        # --- C. 右側面板 (Interaction Panel) ---
+        # 顯示訊息 (如：載入中、你贏了)
+        self.html_msg = widgets.HTML(
+            layout=widgets.Layout(
+                width='90%', height='80px', margin='10px 0',
+                display='flex', justify_content='center', align_items='center'
+            )
+        )
+
+        # 顯示猜測的單字 (例如： P _ T H _ N)
+        self.html_word = widgets.HTML(
+            layout=widgets.Layout(
+                width='100%', height='60px',
+                display='flex', justify_content='center', align_items='center'
+            )
+        )
+
+        # --- 動態生成虛擬鍵盤 ---
+        self.key_buttons = {}
+        rows = []
+        for row_chars in self.config.KEYBOARD_LAYOUT: # 遍歷每一行 (如 QWERTY...)
+            row_btns = []
+            for char in row_chars: # 遍歷每一個字元
+                btn = widgets.Button(
+                    description=char,
+                    layout=widgets.Layout(width='36px', height='36px', margin='2px')
+                )
+                btn.style.button_color = self.config.COLOR_KEY_DEFAULT
+                # 綁定按鍵點擊事件
+                btn.on_click(self._on_key_press)
+                # 存入字典以便後續透過字元找到對應按鈕 (例：self.key_buttons['A'])
+                self.key_buttons[char] = btn
+                row_btns.append(btn)
+            rows.append(widgets.HBox(row_btns, layout=widgets.Layout(justify_content='center')))
+
+        self.keyboard_box = widgets.VBox(rows, layout=widgets.Layout(width='100%', margin='10px 0'))
+
+        # 開始/重新開始按鈕
+        self.btn_start = widgets.Button(
+            description="START",
+            button_style='primary', # 藍色風格
+            layout=widgets.Layout(width='180px', height='40px')
+        )
+        self.btn_start.on_click(self._on_start)
+
+        right_panel = widgets.VBox(
+            [self.html_msg, self.html_word, self.keyboard_box, self.btn_start],
+            layout=widgets.Layout(
+                width='65%', height='100%',
+                align_items='center', justify_content='center', padding='0 10px'
+            )
+        )
+
+        # --- D. 主容器組裝 ---
+        content_box = widgets.HBox([left_panel, right_panel], layout=widgets.Layout(width='100%', height='400px'))
+
+        self.main_ui = widgets.VBox(
+            [top_bar, content_box],
+            layout=widgets.Layout(
+                width=self.config.WIDTH_MAIN,
+                height=self.config.HEIGHT_MAIN,
+                border='1px solid #E5E7EB',
+                margin='0 auto',
+                overflow='hidden'
+            )
+        )
+
+        # UI 建立完成後，進行第一次的畫面更新
+        self._update_text_res()
+        self._show_welcome_msg()
+        self.html_board.value = get_hangman_svg(6)
+        self.html_lives.value = self._get_hearts_html(6)
+
+        # [延遲綁定] 確保 UI 建立完成後才開始監聽難度變化，避免初始化時誤觸下載
+        self.dd_diff.observe(self._on_diff_change, names='value')
+
+    def display(self):
+        """外部呼叫此方法來顯示介面"""
+        display(self.main_ui)
+        self._trigger_load_words()
+
+    # =========================================================================
+    # 4. 邏輯核心 (Game Logic & State Management)
+    # -------------------------------------------------------------------------
+    # 處理遊戲規則、資料載入、狀態判斷
+    # =========================================================================
+
+    def _trigger_load_words(self):
+        """
+        觸發題庫下載流程 (非同步)。
+        """
+        self._req_id += 1          # 每次請求，ID + 1
+        current_req = self._req_id # 記住當下的 ID
+
+        # UI 顯示載入訊息
+        txt = self.config.TRANSLATIONS[self.lang]
+        self.html_msg.value = f"<div style='color:#666'>{txt['start_desc']}</div>"
+
+        # [多執行緒] 啟動背景執行緒去下載，避免主程式 (UI) 卡住無法回應
+        # daemon=True 表示當主程式結束時，這個執行緒也會自動被殺掉
+        threading.Thread(target=self._load_words_worker, args=(current_req,), daemon=True).start()
+
+    def _load_words_worker(self, req_id):
+        """
+        背景下載工作者 (Worker)。此函式會在獨立的 Thread 中執行。
+        """
+        diff = self.dd_diff.value
+        url = self.config.URLS.get(diff)
+        try:
+            r = requests.get(url, timeout=3) # 設定 3 秒超時
+            if r.status_code == 200:
+                # 使用 List Comprehension 處理資料：去空白、轉大寫、篩選長度
+                words = [w.strip().upper() for w in r.text.splitlines() if 3 < len(w.strip()) < 12]
+            else:
+                words = ['OFFLINE', 'ERROR']
+        except:
+            words = ['OFFLINE', 'ERROR']
+
+        # [Race Condition 檢查]
+        # 如果 req_id 不等於最新的 self._req_id，代表這個下載請求已經過期了，直接結束不處理。
+        if req_id != self._req_id:
+            return
+
+        self.word_list = words
+        self._start_game() # 下載完成，自動開始
+
+    def _start_game(self):
+        """重置遊戲狀態，開始新局"""
+        if not self.word_list:
+            self._trigger_load_words()
+            return
+
+        self.current_word = random.choice(self.word_list) # 隨機選字
+        self.lives = 6
+        self.guessed = []
+        self.state = 'PLAYING'
+
+        # 如果勾選「顯示母音」，預先將母音加入已猜列表
+        if self.cb_mode.value:
+            self.guessed = ['A', 'E', 'I', 'O', 'U']
+
+        # 重置所有鍵盤按鈕的狀態與顏色
+        for char, btn in self.key_buttons.items():
+            is_disabled = char in self.guessed
+            btn.disabled = is_disabled
+            btn.style.button_color = '#F3F4F6' if is_disabled else self.config.COLOR_KEY_DEFAULT
+            btn.style.text_color = '#9CA3AF' if is_disabled else 'black'
+
+        self._refresh_board()
+        self.html_msg.value = ""
+
+    def _process_guess(self, char):
+        """
+        處理玩家猜測邏輯
+        Args:
+            char (str): 玩家點擊的字母
+        """
+        if self.state != 'PLAYING': return
+
+        # 停用該按鈕
+        btn = self.key_buttons[char]
+        btn.disabled = True
+        if char not in self.guessed: self.guessed.append(char)
+
+        if char in self.current_word:
+            # 猜對了：按鈕變綠
+            btn.style.button_color = self.config.COLOR_SUCCESS
+            btn.style.text_color = 'white'
+            self._refresh_board()
+
+            # 檢查是否全對 (All 函式檢查是否所有字母都在 guessed 裡)
+            if all(c in self.guessed for c in self.current_word):
+                self._game_over(win=True)
+        else:
+            # 猜錯了：按鈕變紅、扣血
+            btn.style.button_color = self.config.COLOR_ERROR
+            btn.style.text_color = 'white'
+            self.lives -= 1
+            self._refresh_board()
+
+            # 檢查是否死亡
+            if self.lives <= 0:
+                self._game_over(win=False)
+
+    def _game_over(self, win):
+        """遊戲結束處理：鎖定介面、顯示結果、啟動翻譯"""
+        self.state = 'WON' if win else 'LOST'
+        txt = self.config.TRANSLATIONS[self.lang]
+
+        # 強制顯示完整單字 (傳入 reveal=True)
+        self._refresh_board(reveal=True)
+
+        # 鎖定所有鍵盤
+        for btn in self.key_buttons.values(): btn.disabled = True
+
+        # 顯示「翻譯中」提示
+        self._render_msg_card(win, txt['translating'])
+
+        # [多執行緒] 背景啟動翻譯，避免 UI 卡頓
+        threading.Thread(target=self._fetch_translation, args=(self.current_word, win), daemon=True).start()
+
+    def _fetch_translation(self, word, win):
+        """
+        呼叫翻譯 API。
+        注意：這裡使用 try-except 包覆，因為網路翻譯可能會失敗。
+        """
+        txt = self.config.TRANSLATIONS[self.lang]
+        try:
+            # 使用 deep_translator 進行翻譯
+            trans_text = GoogleTranslator(source='en', target='zh-TW').translate(word)
+        except:
+            trans_text = txt['trans_fail']
+
+        # 更新 UI 顯示翻譯結果
+        self._render_msg_card(win, trans_text)
+
+    # =========================================================================
+    # 5. 渲染輔助函式 (Rendering Helpers)
+    # -------------------------------------------------------------------------
+    # 負責產生複雜的 HTML 字串供 Widget 顯示
+    # =========================================================================
+
+    def _render_msg_card(self, win, trans_text):
+        """產生遊戲結束的訊息卡片 HTML"""
+        txt = self.config.TRANSLATIONS[self.lang]
+        bg_color = '#ECFDF5' if win else '#FEF2F2'
+        text_color = self.config.COLOR_SUCCESS if win else self.config.COLOR_ERROR
+        title = txt['win_title'] if win else txt['lose_title']
+
+        # 使用 f-string 組合 HTML CSS
+        html = f"""
+        <div style="
+            width: 100%; height: 100%;
+            background-color: {bg_color};
+            border-radius: 8px;
+            display: flex; flex-direction: column;
+            justify-content: center; align-items: center;
+            border: 1px solid {text_color}33;
+        ">
+            <div style="font-weight: bold; color: {text_color}; font-size: 18px;">{title}</div>
+            <div style="font-size: 14px; color: #4B5563; margin-top: 4px;">
+                {txt['ans_label']}: <span style="font-weight:bold; color:#111827;">{self.current_word}</span>
+                <span style="color: {self.config.COLOR_PRIMARY}; margin-left: 5px;">({trans_text})</span>
+            </div>
+        </div>
+        """
+        self.html_msg.value = html
+
+    def _show_welcome_msg(self):
+        """產生歡迎訊息 HTML"""
+        txt = self.config.TRANSLATIONS[self.lang]
+        self.html_msg.value = f"""
+        <div style="text-align: center; color: {self.config.COLOR_TEXT_LIGHT};">
+            <div style="font-size: 16px; font-weight: bold; color: {self.config.COLOR_TEXT_MAIN}">{txt['start_title']}</div>
+            <div style="font-size: 13px;">{txt['start_desc']}</div>
+        </div>
+        """
+
+    def _refresh_board(self, reveal=False):
+        """
+        更新畫面中央區域：
+        1. 重新生成愛心 (lives)
+        2. 重新生成劊子手 (SVG)
+        3. 重新生成單字填空區 (Word Slots)
+        """
+        self.html_lives.value = self._get_hearts_html(self.lives)
+        self.html_board.value = get_hangman_svg(self.lives)
+
+        html = ""
+        for c in self.current_word:
+            # 如果字母已猜過 OR 遊戲結束強制顯示(reveal)
+            if c in self.guessed or reveal:
+                color = '#111827' if c in self.guessed else '#DC2626' # 沒猜到的字顯紅
+                # 使用 border-bottom 模擬填空底線
+                html += f"""
+                <div style="
+                    display: inline-block; width: 32px; height: 40px;
+                    line-height: 40px; text-align: center;
+                    font-family: monospace; font-size: 28px; font-weight: bold;
+                    border-bottom: 3px solid #E5E7EB; margin: 0 4px; color: {color};
+                ">{c}</div>"""
+            else:
+                # 顯示空白底線
+                html += f"""
+                <div style="
+                    display: inline-block; width: 32px; height: 40px;
+                    border-bottom: 3px solid #374151; margin: 0 4px;
+                "></div>"""
+
+        self.html_word.value = html
+
+    def _get_hearts_html(self, lives):
+        """產生愛心字串，實心紅愛心代表剩餘血量"""
+        full = '<span style="color:#EF4444; font-size:20px; text-shadow: 0 2px 4px rgba(239,68,68,0.3);">❤</span>'
+        empty = '<span style="color:#E5E7EB; font-size:20px;">❤</span>'
+        # 字串乘法：'A' * 3 會變成 'AAA'
+        return f"<div style='letter-spacing: 4px;'>{full * lives}{empty * (6-lives)}</div>"
+
+    def _update_text_res(self):
+        """
+        更新 UI 文字語言。
+        技巧：先 unobserve (取消監聽) -> 更新選項 -> 再 observe (恢復監聽)。
+        避免更新選項的瞬間，系統誤以為數值改變而觸發重新下載。
+        """
+        try:
+            self.dd_diff.unobserve(self._on_diff_change, names='value')
+        except:
+            pass
+
+        txt = self.config.TRANSLATIONS[self.lang]
+        self.btn_start.description = txt['btn_start']
+        self.cb_mode.description = txt['lbl_cheat']
+
+        # 暫存目前選單的值
+        current_val = self.dd_diff.value
+        # 更新選單文字 (例如：Easy -> 簡單)
+        self.dd_diff.options = [
+            (txt['diff_easy'], 'easy'),
+            (txt['diff_medium'], 'medium'),
+            (txt['diff_hard'], 'hard')
+        ]
+        # 把值設回去，保持使用者原本的選擇
+        self.dd_diff.value = current_val
+
+        # 恢復監聽
+        self.dd_diff.observe(self._on_diff_change, names='value')
+
+    # =========================================================================
+    # 6. 事件監聽 (Event Handlers)
+    # -------------------------------------------------------------------------
+    # 負責接收使用者的操作 (點擊、選擇)，並轉發給邏輯函式處理
+    # =========================================================================
+    def _on_start(self, b): self._start_game()
+    def _on_key_press(self, b): self._process_guess(b.description)
+    def _on_lang_change(self, c):
+        self.lang = c['new'] # 取得新選擇的語言代碼
+        self._update_text_res()
+
+    def _on_diff_change(self, c):
+        self._trigger_load_words() # 難度變了，重新下載題庫
+
+    def _on_mode_change(self, c):
+        self._start_game() # 模式變了，重開一局
+
+# 啟動遊戲
+game = UltimateHangman()
+game.display()
