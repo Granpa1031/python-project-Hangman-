@@ -1,0 +1,5 @@
+# deep-translator : 翻譯引擎 (用來翻譯答案)
+# ipywidgets      : 互動介面零件 (按鈕、下拉選單)
+# requests        : 網路抓手 (用來下載題庫)
+
+%pip install deep-translator ipywidgets requests
